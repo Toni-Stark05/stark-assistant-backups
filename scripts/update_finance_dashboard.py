@@ -26,6 +26,38 @@ start_30 = (today_local - timedelta(days=30)).isoformat()
 start_7 = (today_local - timedelta(days=6)).isoformat()
 
 
+def notion_post(url, payload):
+    resp = requests.post(url, headers=HEADERS, json=payload)
+    if not resp.ok:
+        print('POST error:', resp.text)
+    resp.raise_for_status()
+    return resp
+
+
+def notion_patch(url, payload):
+    resp = requests.patch(url, headers=HEADERS, json=payload)
+    if not resp.ok:
+        print('PATCH error:', resp.text)
+    resp.raise_for_status()
+    return resp
+
+
+def notion_get(url):
+    resp = requests.get(url, headers=HEADERS)
+    if not resp.ok:
+        print('GET error:', resp.text)
+    resp.raise_for_status()
+    return resp
+
+
+def notion_delete(url):
+    resp = requests.delete(url, headers=HEADERS)
+    if not resp.ok:
+        print('DELETE error:', resp.text)
+    resp.raise_for_status()
+    return resp
+
+
 def query_transactions(limit=None, sorts=None, filter_payload=None):
     payload = {}
     if filter_payload:
@@ -36,13 +68,13 @@ def query_transactions(limit=None, sorts=None, filter_payload=None):
         payload['page_size'] = limit
     results = []
     while True:
-        resp = requests.post(
+        data = notion_post(
             f'https://api.notion.com/v1/databases/{TRANSACTIONS_DB}/query',
-            headers=HEADERS,
-            json=payload
-        )
-        data = resp.json()
+            payload
+        ).json()
         results.extend(data.get('results', []))
+        if limit is not None:
+            break
         if not data.get('has_more'):
             break
         payload['start_cursor'] = data['next_cursor']
@@ -50,12 +82,10 @@ def query_transactions(limit=None, sorts=None, filter_payload=None):
 
 
 def get_accounts_map():
-    resp = requests.post(
+    data = notion_post(
         f'https://api.notion.com/v1/databases/{ACCOUNTS_DB}/query',
-        headers=HEADERS,
-        json={'page_size': 100}
-    )
-    data = resp.json()
+        {'page_size': 100}
+    ).json()
     mapping = {}
     for page in data.get('results', []):
         name = ''.join([t['plain_text'] for t in page['properties']['Name']['title']])
@@ -89,8 +119,6 @@ for page in last30:
             today_totals[currency] += amount
         if currency == 'BYN':
             byn_by_day[d] += amount
-    if d == today_local.isoformat():
-        today_totals[currency] += amount
 
 
 def fmt_money(value):
@@ -134,28 +162,28 @@ if not recent_lines:
 summary_lines.extend(recent_lines)
 summary_text = '\n'.join(summary_lines)
 
-paragraph_text = (
-    "Автосводка: суммы за 7 дней, траты сегодня и последние операции. Ниже — базы Accounts/Transactions" )
+paragraph_text = 'Автосводка: суммы за 7 дней, траты сегодня и последние операции. Ниже — базы Accounts/Transactions.'
 
-requests.patch(
+notion_patch(
     f'https://api.notion.com/v1/blocks/{HEADING_ID}',
-    headers=HEADERS,
-    json={'heading_1': {'rich_text': [{'type': 'text', 'text': {'content': 'Finance HQ — дэшборд'}}]}}
+    {'heading_1': {'rich_text': [{'type': 'text', 'text': {'content': 'Finance HQ — дэшборд'}}]}}
 )
-requests.patch(
+notion_patch(
     f'https://api.notion.com/v1/blocks/{PARAGRAPH_ID}',
-    headers=HEADERS,
-    json={'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': paragraph_text}}]}}
+    {'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': paragraph_text}}]}}
 )
-requests.patch(
+notion_patch(
     f'https://api.notion.com/v1/blocks/{CALLOUT_ID}',
-    headers=HEADERS,
-    json={'callout': {'rich_text': [{'type': 'text', 'text': {'content': summary_text}}], 'icon': {'type': 'emoji', 'emoji': '📊'}}}
+    {'callout': {'rich_text': [{'type': 'text', 'text': {'content': summary_text}}]}}
 )
 
-children_resp = requests.get(f'https://api.notion.com/v1/blocks/{CALLOUT_ID}/children?page_size=50', headers=HEADERS)
-for child in children_resp.json().get('results', []):
-    requests.delete(f"https://api.notion.com/v1/blocks/{child['id']}", headers=HEADERS)
+# Remove old chart blocks (quickchart images)
+page_children = notion_get(f'https://api.notion.com/v1/blocks/{PAGE_ID}/children?page_size=100').json()
+for block in page_children.get('results', []):
+    if block['type'] == 'image':
+        url = block['image'][block['image']['type']]['url']
+        if 'quickchart.io' in url:
+            notion_delete(f"https://api.notion.com/v1/blocks/{block['id']}")
 
 # Chart data (BYN)
 dates = [today_local - timedelta(days=i) for i in reversed(range(7))]
@@ -179,14 +207,20 @@ config = {
         'scales': {'y': {'beginAtZero': True}}
     }
 }
-chart_url = 'https://quickchart.io/chart?c=' + urllib.parse.quote(json.dumps(config))
+chart_url = 'https://quickchart.io/chart?c=' + urllib.parse.quote(json.dumps(config, separators=(',', ':')))
 
-requests.post(
-    f'https://api.notion.com/v1/blocks/{CALLOUT_ID}/children',
-    headers=HEADERS,
-    json={'children': [{
-        'object': 'block',
-        'type': 'image',
-        'image': {'type': 'external', 'external': {'url': chart_url}}
-    }]}
+image_payload = {'children': [{
+    'object': 'block',
+    'type': 'image',
+    'image': {'type': 'external', 'external': {'url': chart_url}}
+}]}
+chart_block = notion_post(
+    f'https://api.notion.com/v1/blocks/{PAGE_ID}/children',
+    image_payload
+).json()['results'][0]['id']
+
+# move chart right after the callout
+notion_patch(
+    f'https://api.notion.com/v1/blocks/{chart_block}',
+    {'parent': {'type': 'page_id', 'page_id': PAGE_ID}, 'after': CALLOUT_ID}
 )

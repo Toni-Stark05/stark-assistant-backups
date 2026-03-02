@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TARGET = 'telegram:2139518623'
-ANCHOR_LOCAL = datetime(2026, 3, 2, 18, 0, tzinfo=timezone(timedelta(hours=3)))
+ANCHOR_LOCAL = datetime(2026, 3, 2, 22, 0, tzinfo=timezone(timedelta(hours=3)))
 ANCHOR_UTC = ANCHOR_LOCAL.astimezone(timezone.utc)
 INTERVAL = 5 * 3600  # seconds
 STATE_PATH = Path('memory/cloudcode_limit_state.json')
